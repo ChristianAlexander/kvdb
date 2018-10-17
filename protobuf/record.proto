@@ -1,0 +1,13 @@
+syntax = "proto3";
+package protobuf;
+
+message Record {
+	enum RecordKind {
+		SET = 0;
+		DEL = 1;
+	}
+
+	RecordKind kind = 1;
+	string key = 2;
+	string value = 3;
+}
