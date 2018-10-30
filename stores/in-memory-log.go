@@ -58,3 +58,5 @@ func (s *inMemoryStore) Keys(ctx context.Context) ([]string, error) {
 
 	return result, nil
 }
+
+func (s *inMemoryStore) Release(context.Context) {}
