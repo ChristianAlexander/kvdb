@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/christianalexander/kvdb"
 	"github.com/christianalexander/kvdb/stores"
 )
 
@@ -27,7 +28,15 @@ func (q get) Execute(ctx context.Context) error {
 	return nil
 }
 
+func (q get) Undo(ctx context.Context) error {
+	return nil
+}
+
+func (q get) ShouldAutoTransact() bool {
+	return true
+}
+
 // NewGet creates a new get command.
-func NewGet(writer io.Writer, store stores.Store, key string) Command {
+func NewGet(writer io.Writer, store stores.Store, key string) kvdb.Command {
 	return get{writer, store, key}
 }
