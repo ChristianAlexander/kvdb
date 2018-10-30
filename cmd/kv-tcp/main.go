@@ -3,15 +3,20 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
-	"github.com/christianalexander/kvdb/stores"
-
+	"github.com/christianalexander/kvdb"
 	"github.com/christianalexander/kvdb/commands"
+	"github.com/christianalexander/kvdb/protobuf"
+	"github.com/christianalexander/kvdb/stores"
+	"github.com/christianalexander/kvdb/stores/serializable"
+	"github.com/christianalexander/kvdb/transactors"
 
 	"github.com/sirupsen/logrus"
 )
@@ -22,6 +27,16 @@ type contextKey struct {
 
 var ctxKeyServer = contextKey{"SERVER"}
 
+var inPath string
+var outPath string
+
+func init() {
+	flag.StringVar(&inPath, "in", "", "The path to the log input file")
+	flag.StringVar(&outPath, "out", "", "The path to the log out file")
+
+	flag.Parse()
+}
+
 func main() {
 	logrus.Infoln("Starting KV TCP API")
 
@@ -30,15 +45,46 @@ func main() {
 		logrus.Fatalf("Failed to start listener: %v", err)
 	}
 
+	logrus.SetLevel(logrus.DebugLevel)
+
 	logrus.Infoln("Listening on port 8888")
 
 	store := stores.NewInMemoryStore()
 
-	server{store}.serve(ln.(*net.TCPListener))
+	if inPath != "" {
+		inFile, err := os.Open(inPath)
+		if err != nil {
+			logrus.Fatalf("Failed to open inPath file ('%s'): %v", inPath, err)
+		}
+
+		reader := protobuf.NewReader(inFile)
+		s, err := stores.FromPersistence(context.Background(), reader, store)
+		if err != nil {
+			logrus.Fatalf("Failed to read from persistence: %v", err)
+		}
+
+		store = s
+	}
+
+	if outPath != "" {
+		outFile, err := os.OpenFile(outPath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0664)
+		if err != nil {
+			logrus.Fatalf("Failed to open outPath file ('%s'): %v", outPath, err)
+		}
+
+		writer := protobuf.NewWriter(outFile)
+		store = stores.WithPersistence(writer, store)
+	}
+
+	store = serializable.NewTwoPhaseLockStore(store)
+	transactor := transactors.New(store)
+
+	server{store, transactor}.serve(ln.(*net.TCPListener))
 }
 
 type server struct {
-	store stores.Store
+	store      stores.Store
+	transactor transactors.Transactor
 }
 
 func (s server) serve(l net.Listener) error {
@@ -74,23 +120,34 @@ func (s server) serve(l net.Listener) error {
 type conn struct {
 	nc    net.Conn
 	close chan struct{}
-	txID  int
+	txID  int64
 }
 
-func newConn(c net.Conn) conn {
-	return conn{nc: c, close: make(chan struct{})}
+func newConn(c net.Conn) *conn {
+	return &conn{nc: c, close: make(chan struct{})}
 }
 
-func (c conn) serve(ctx context.Context) {
+func (c *conn) serve(ctx context.Context) {
 	defer c.nc.Close()
 
 	reader := bufio.NewReaderSize(c.nc, 4<<10)
+
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		<-cctx.Done()
+		if c.txID != 0 {
+			srv := ctx.Value(ctxKeyServer).(server)
+			srv.transactor.Rollback(context.WithValue(cctx, stores.ContextKeyTransactionID, c.txID))
+		}
+	}()
 
 	for {
 		select {
 		case <-c.close:
 			return
-		case <-ctx.Done():
+		case <-cctx.Done():
 			return
 		default:
 			l, _, err := reader.ReadLine()
@@ -98,7 +155,7 @@ func (c conn) serve(ctx context.Context) {
 				if err != io.EOF {
 					logrus.Warnf("Failed to read request: %v", err)
 				}
-				break
+				return
 			}
 
 			n, p1, p2, ok := parseCommandLine(string(l))
@@ -107,14 +164,15 @@ func (c conn) serve(ctx context.Context) {
 				continue
 			}
 
-			cmd, err := c.GetCommand(ctx, n, p1, p2)
+			cmd, err := c.GetCommand(cctx, n, p1, p2)
 			if err != nil {
 				logrus.Warnln(err)
 				fmt.Fprintf(c.nc, "%v\r\n", err)
 				return
 			}
 
-			err = cmd.Execute(ctx)
+			srv := ctx.Value(ctxKeyServer).(server)
+			srv.transactor.Execute(context.WithValue(cctx, stores.ContextKeyTransactionID, c.txID), cmd)
 			if err != nil {
 				logrus.Warnf("Failed to execute command: %v", err)
 				fmt.Fprintf(c.nc, "%v\r\n", err)
@@ -124,7 +182,7 @@ func (c conn) serve(ctx context.Context) {
 	}
 }
 
-func (c conn) GetCommand(ctx context.Context, commandName, p1, p2 string) (commands.Command, error) {
+func (c *conn) GetCommand(ctx context.Context, commandName, p1, p2 string) (kvdb.Command, error) {
 	switch strings.ToUpper(commandName) {
 	case "QUIT":
 		return commands.NewQuit(func() error {
@@ -153,12 +211,26 @@ func (c conn) GetCommand(ctx context.Context, commandName, p1, p2 string) (comma
 		if c.txID != 0 {
 			return nil, fmt.Errorf("cannot begin transaction within an active transaction")
 		}
-		return commands.NewNoop(), nil
+		srv := ctx.Value(ctxKeyServer).(server)
+		return commands.NewBegin(c.nc, srv.transactor, func(txID int64) {
+			c.txID = txID
+		}), nil
 	case "COMMIT":
 		if c.txID == 0 {
 			return nil, fmt.Errorf("cannot commit without a transaction")
 		}
-		return commands.NewNoop(), nil
+		srv := ctx.Value(ctxKeyServer).(server)
+		return commands.NewCommit(c.nc, srv.transactor, func(txID int64) {
+			c.txID = txID
+		}), nil
+	case "ROLLBACK":
+		if c.txID == 0 {
+			return nil, fmt.Errorf("cannot rollback without a transaction")
+		}
+		srv := ctx.Value(ctxKeyServer).(server)
+		return commands.NewRollback(c.nc, srv.transactor, func(txID int64) {
+			c.txID = txID
+		}), nil
 	}
 
 	return nil, fmt.Errorf("invalid command '%s'", commandName)
