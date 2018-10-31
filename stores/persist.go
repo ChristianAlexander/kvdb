@@ -20,10 +20,12 @@ func WithPersistence(writer Writer, store Store) Store {
 }
 
 func (s *withPersistence) Set(ctx context.Context, key string, value string) error {
+	txID := ctx.Value(ContextKeyTransactionID).(int64)
 	err := s.writer.Write(ctx, Record{
-		Kind:  RecordKindSet,
-		Key:   key,
-		Value: value,
+		Kind:          RecordKindSet,
+		TransactionID: txID,
+		Key:           key,
+		Value:         value,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write set operation: %v", err)
@@ -33,9 +35,11 @@ func (s *withPersistence) Set(ctx context.Context, key string, value string) err
 }
 
 func (s *withPersistence) Delete(ctx context.Context, key string) error {
+	txID := ctx.Value(ContextKeyTransactionID).(int64)
 	err := s.writer.Write(ctx, Record{
-		Kind: RecordKindDelete,
-		Key:  key,
+		Kind:          RecordKindDelete,
+		TransactionID: txID,
+		Key:           key,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to write delete operation: %v", err)
