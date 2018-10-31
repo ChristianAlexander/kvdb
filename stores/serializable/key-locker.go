@@ -169,33 +169,39 @@ func (lm *lockerMap) Release(txID int64) {
 		locker.mu.Lock()
 		delete(locker.activeTransactions, txID)
 
+		// if this was the writer
 		if locker.writeLockTxID == txID {
+			// release the writer
 			locker.writeLockTxID = 0
 
+			// Release all readers
 			for _, r := range locker.waitingReaders {
 				logrus.WithField("txID", txID).Debugf("Releasing reader for tx %d - key %s", r.txID, key)
 				close(r.ready)
 			}
+			// Remove all reader waiters
 			locker.waitingReaders = nil
 		}
 
-		var hasUnlockedWriter bool
-		if len(locker.activeTransactions) == 0 {
+		if len(locker.activeTransactions) == 0 && len(locker.waitingWriters) != 0 {
+			w := locker.waitingWriters[0]
+			locker.waitingWriters = locker.waitingWriters[1:]
+			close(w.ready)
+		} else if len(locker.activeTransactions) == 1 {
+			var activeTxID int64
+			for k := range locker.activeTransactions {
+				activeTxID = k
+			}
+
 			ww := locker.waitingWriters
 			for i, w := range ww {
-				if w.txID == txID {
+				if w.txID == activeTxID {
 					close(w.ready)
-					hasUnlockedWriter = true
 					locker.waitingWriters = append(locker.waitingWriters[:i], locker.waitingWriters[i+1:]...)
 				}
 			}
 		}
 
-		if !hasUnlockedWriter && len(locker.waitingWriters) != 0 {
-			w := locker.waitingWriters[0]
-			locker.waitingWriters = locker.waitingWriters[1:]
-			close(w.ready)
-		}
 		locker.mu.Unlock()
 	}
 
