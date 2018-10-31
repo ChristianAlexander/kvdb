@@ -4,9 +4,10 @@ import "github.com/christianalexander/kvdb/stores"
 
 func RecordToProto(r stores.Record) *Record {
 	return &Record{
-		Kind:  recordKindToProto(r.Kind),
-		Key:   r.Key,
-		Value: r.Value,
+		Kind:          recordKindToProto(r.Kind),
+		TransactionId: r.TransactionID,
+		Key:           r.Key,
+		Value:         r.Value,
 	}
 }
 
@@ -16,6 +17,8 @@ func recordKindToProto(k stores.RecordKind) Record_RecordKind {
 		return Record_SET
 	case stores.RecordKindDelete:
 		return Record_DEL
+	case stores.RecordKindCommit:
+		return Record_CMT
 	}
 
 	return Record_SET
@@ -27,6 +30,8 @@ func recordKindFromProto(k Record_RecordKind) stores.RecordKind {
 		return stores.RecordKindSet
 	case Record_DEL:
 		return stores.RecordKindDelete
+	case Record_CMT:
+		return stores.RecordKindCommit
 	}
 
 	return stores.RecordKindSet
@@ -34,8 +39,9 @@ func recordKindFromProto(k Record_RecordKind) stores.RecordKind {
 
 func (r Record) ToRecord() *stores.Record {
 	return &stores.Record{
-		Kind:  recordKindFromProto(r.Kind),
-		Key:   r.Key,
-		Value: r.Value,
+		Kind:          recordKindFromProto(r.Kind),
+		TransactionID: r.TransactionId,
+		Key:           r.Key,
+		Value:         r.Value,
 	}
 }
