@@ -18,13 +18,10 @@ type delete struct {
 
 // Execute satisfies the command interface.
 func (q *delete) Execute(ctx context.Context) error {
-	val, err := q.store.Get(ctx, q.key)
-	if err != nil {
-		return err
-	}
+	val, _ := q.store.Get(ctx, q.key)
 	q.previousValue = val
 
-	err = q.store.Delete(ctx, q.key)
+	err := q.store.Delete(ctx, q.key)
 	if err == nil {
 		q.writer.Write([]byte("OK\r\n"))
 	}
