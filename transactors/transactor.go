@@ -87,8 +87,8 @@ func (t *transactor) Rollback(ctx context.Context) error {
 		return fmt.Errorf("can not roll back transaction without command history")
 	}
 
-	for _, c := range commands {
-		c.Undo(ctx)
+	for i := len(commands) - 1; i >= 0; i-- {
+		commands[i].Undo(ctx)
 	}
 
 	t.store.Release(ctx)
