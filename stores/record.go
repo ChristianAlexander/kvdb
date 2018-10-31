@@ -7,14 +7,16 @@ type RecordKind string
 const (
 	RecordKindSet    RecordKind = "SET"
 	RecordKindDelete            = "DEL"
+	RecordKindCommit            = "COMMIT"
 )
 
 type Record struct {
-	Kind  RecordKind
-	Key   string
-	Value string
+	Kind          RecordKind
+	TransactionID int64
+	Key           string
+	Value         string
 }
 
 func (r Record) String() string {
-	return fmt.Sprintf("%s:%s", r.Key, r.Value)
+	return fmt.Sprintf("%s:%d:%s:%s", r.Kind, r.TransactionID, r.Key, r.Value)
 }
