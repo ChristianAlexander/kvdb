@@ -44,8 +44,42 @@ func (s *withPersistence) Delete(ctx context.Context, key string) error {
 	return s.Store.Delete(ctx, key)
 }
 
+func applyRecord(ctx context.Context, pendingTransactionRecords map[int64][]Record, store Store, record Record) {
+	logrus.Debugln(record.String())
+	switch record.Kind {
+	case RecordKindSet:
+		if record.TransactionID != 0 {
+			pendingTransactionRecords[record.TransactionID] = append(pendingTransactionRecords[record.TransactionID], record)
+		} else {
+			err := store.Set(ctx, record.Key, record.Value)
+			if err != nil {
+				logrus.Warnf("Failed to replay set record: %v", err)
+			}
+		}
+	case RecordKindDelete:
+		if record.TransactionID != 0 {
+			pendingTransactionRecords[record.TransactionID] = append(pendingTransactionRecords[record.TransactionID], record)
+		} else {
+			err := store.Delete(ctx, record.Key)
+			if err != nil {
+				logrus.Warnf("Failed to replay delete record: %v", err)
+			}
+		}
+	case RecordKindCommit:
+		if records, ok := pendingTransactionRecords[record.TransactionID]; ok {
+			for _, r := range records {
+				r.TransactionID = 0
+				applyRecord(ctx, pendingTransactionRecords, store, r)
+			}
+		}
+	default:
+		logrus.Warnf("Received record of unknown type '%s'", record.Kind)
+	}
+}
+
 func FromPersistence(ctx context.Context, reader Reader, store Store) (Store, error) {
 	records := make(chan Record)
+	pendingTransactionRecords := make(map[int64][]Record)
 
 	go func() {
 		reader.Read(ctx, records)
@@ -61,22 +95,7 @@ func FromPersistence(ctx context.Context, reader Reader, store Store) (Store, er
 				return store, nil
 			}
 
-			switch r.Kind {
-			case RecordKindSet:
-				err := store.Set(ctx, r.Key, r.Value)
-				if err != nil {
-					logrus.Warnf("Failed to replay set record: %v", err)
-				}
-				continue
-			case RecordKindDelete:
-				err := store.Delete(ctx, r.Key)
-				if err != nil {
-					logrus.Warnf("Failed to replay delete record: %v", err)
-				}
-				continue
-			default:
-				logrus.Warnf("Received record of unknown type '%s'", r.Kind)
-			}
+			applyRecord(ctx, pendingTransactionRecords, store, r)
 		}
 	}
 }
