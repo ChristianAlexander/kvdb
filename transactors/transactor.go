@@ -24,13 +24,15 @@ type transactor struct {
 	mu                  sync.Mutex
 	transactionCommands map[int64][]kvdb.Command
 	latestTransactionID int64
+	writer              stores.Writer
 }
 
 // New creates a new Transactor.
-func New(store stores.Store) Transactor {
+func New(store stores.Store, writer stores.Writer) Transactor {
 	return &transactor{
 		store:               store,
 		transactionCommands: make(map[int64][]kvdb.Command),
+		writer:              writer,
 	}
 }
 
@@ -72,6 +74,13 @@ func (t *transactor) Commit(ctx context.Context) error {
 	t.mu.Lock()
 	delete(t.transactionCommands, txID)
 	t.mu.Unlock()
+
+	if t.writer != nil {
+		t.writer.Write(ctx, stores.Record{
+			Kind:          stores.RecordKindCommit,
+			TransactionID: txID,
+		})
+	}
 
 	return nil
 }

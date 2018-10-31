@@ -66,18 +66,20 @@ func main() {
 		store = s
 	}
 
+	var writer stores.Writer
 	if outPath != "" {
 		outFile, err := os.OpenFile(outPath, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0664)
 		if err != nil {
 			logrus.Fatalf("Failed to open outPath file ('%s'): %v", outPath, err)
 		}
 
-		writer := protobuf.NewWriter(outFile)
+		w := protobuf.NewWriter(outFile)
+		writer = w
 		store = stores.WithPersistence(writer, store)
 	}
 
 	store = serializable.NewTwoPhaseLockStore(store)
-	transactor := transactors.New(store)
+	transactor := transactors.New(store, writer)
 
 	server{store, transactor}.serve(ln.(*net.TCPListener))
 }
