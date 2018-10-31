@@ -5,9 +5,11 @@ message Record {
 	enum RecordKind {
 		SET = 0;
 		DEL = 1;
+		CMT = 2;
 	}
 
 	RecordKind kind = 1;
 	string key = 2;
 	string value = 3;
+	int64 transactionId = 4;
 }
