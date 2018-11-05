@@ -83,7 +83,7 @@ func main() {
 	store = serializable.NewTwoPhaseLockStore(store)
 	transactor := transactors.New(store, writer)
 
-	s := server{store, transactor, make(chan bool)}
+	s := server{ln.(*net.TCPListener), store, transactor, make(chan bool)}
 
 	var gracefulStop = make(chan os.Signal)
 	signal.Notify(gracefulStop, syscall.SIGTERM)
@@ -91,26 +91,26 @@ func main() {
 	go func() {
 		<-gracefulStop
 		logrus.Infoln("Begin graceful server shutdown")
+		ln.Close() // unblocks Accept and refuse new attempts to connect
 		s.stop()
 		os.Exit(0)
 	}()
 
-	s.serve(ln.(*net.TCPListener))
+	s.serve()
 }
 
 type server struct {
+	l          net.Listener
 	store      stores.Store
 	transactor transactors.Transactor
 	quit       chan bool
 }
 
-func (s server) serve(l net.Listener) error {
-	defer l.Close()
-
+func (s server) serve() error {
 	var tempDelay time.Duration
 	ctx := context.Background()
 	for {
-		rw, e := l.Accept()
+		rw, e := s.l.Accept()
 		if e != nil {
 			if ne, ok := e.(net.Error); ok && ne.Temporary() {
 				if tempDelay == 0 {
