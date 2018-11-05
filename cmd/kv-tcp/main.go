@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/christianalexander/kvdb"
@@ -81,12 +83,25 @@ func main() {
 	store = serializable.NewTwoPhaseLockStore(store)
 	transactor := transactors.New(store, writer)
 
-	server{store, transactor}.serve(ln.(*net.TCPListener))
+	s := server{store, transactor, make(chan bool)}
+
+	var gracefulStop = make(chan os.Signal)
+	signal.Notify(gracefulStop, syscall.SIGTERM)
+	signal.Notify(gracefulStop, syscall.SIGINT)
+	go func() {
+		<-gracefulStop
+		logrus.Infoln("Begin graceful server shutdown")
+		s.stop()
+		os.Exit(0)
+	}()
+
+	s.serve(ln.(*net.TCPListener))
 }
 
 type server struct {
 	store      stores.Store
 	transactor transactors.Transactor
+	quit       chan bool
 }
 
 func (s server) serve(l net.Listener) error {
@@ -117,6 +132,12 @@ func (s server) serve(l net.Listener) error {
 		ctx := context.WithValue(ctx, ctxKeyServer, s)
 		go c.serve(ctx)
 	}
+}
+
+func (s server) stop() {
+	s.quit <- true
+	<-s.quit
+	logrus.Infoln("Server stopped")
 }
 
 type conn struct {
