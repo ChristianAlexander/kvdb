@@ -88,8 +88,8 @@ func main() {
 	gracefulStopSignal := make(chan os.Signal, 1)
 	signal.Notify(gracefulStopSignal, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		<-gracefulStopSignal
-		logrus.Infoln("Begin graceful server shutdown")
+		sig := <-gracefulStopSignal
+		logrus.Infof("Signal %v received. Begin graceful server shutdown", sig)
 		ln.Close() // unblocks Accept and refuse new attempts to connect
 		s.stop()
 		os.Exit(0)
