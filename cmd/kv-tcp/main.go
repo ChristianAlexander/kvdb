@@ -85,11 +85,10 @@ func main() {
 
 	s := server{ln.(*net.TCPListener), store, transactor, make(chan bool)}
 
-	var gracefulStop = make(chan os.Signal)
-	signal.Notify(gracefulStop, syscall.SIGTERM)
-	signal.Notify(gracefulStop, syscall.SIGINT)
+	gracefulStopSignal := make(chan os.Signal, 1)
+	signal.Notify(gracefulStopSignal, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		<-gracefulStop
+		<-gracefulStopSignal
 		logrus.Infoln("Begin graceful server shutdown")
 		ln.Close() // unblocks Accept and refuse new attempts to connect
 		s.stop()
