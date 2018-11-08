@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -43,6 +44,8 @@ func main() {
 	logrus.Infoln("Starting KV TCP API")
 
 	ln, err := net.Listen("tcp", ":8888")
+	defer ln.Close()
+
 	if err != nil {
 		logrus.Fatalf("Failed to start listener: %v", err)
 	}
@@ -83,14 +86,13 @@ func main() {
 	store = serializable.NewTwoPhaseLockStore(store)
 	transactor := transactors.New(store, writer)
 
-	s := server{ln.(*net.TCPListener), store, transactor, make(chan bool)}
+	s := server{ln.(*net.TCPListener), store, transactor, make(chan bool, 1)}
 
-	gracefulStopSignal := make(chan os.Signal, 1)
-	signal.Notify(gracefulStopSignal, syscall.SIGTERM, syscall.SIGINT)
+	stopSignal := make(chan os.Signal, 1)
+	signal.Notify(stopSignal, syscall.SIGTERM, syscall.SIGINT)
 	go func() {
-		sig := <-gracefulStopSignal
-		logrus.Infof("Signal %v received. Begin graceful server shutdown", sig)
-		ln.Close() // unblocks Accept and refuse new attempts to connect
+		sig := <-stopSignal
+		logrus.Infof("Received %v signal\n", sig)
 		s.stop()
 		os.Exit(0)
 	}()
@@ -105,12 +107,25 @@ type server struct {
 	quit       chan bool
 }
 
-func (s server) serve() error {
+func (s *server) serve() error {
 	var tempDelay time.Duration
 	ctx := context.Background()
+
+	var wg sync.WaitGroup
+
 	for {
 		rw, e := s.l.Accept()
 		if e != nil {
+
+			select {
+			case <-s.quit:
+				wg.Wait()
+				s.quit <- true
+				return nil
+			default:
+				//avoids blocking if not stop signal yet
+			}
+
 			if ne, ok := e.(net.Error); ok && ne.Temporary() {
 				if tempDelay == 0 {
 					tempDelay = 5 * time.Millisecond
@@ -129,14 +144,16 @@ func (s server) serve() error {
 		tempDelay = 0
 		c := newConn(rw)
 		ctx := context.WithValue(ctx, ctxKeyServer, s)
-		go c.serve(ctx)
+		wg.Add(1)
+		go c.serve(ctx, &wg)
 	}
 }
 
-func (s server) stop() {
+func (s *server) stop() {
 	s.quit <- true
-	<-s.quit
+	s.l.Close() // unblocks Accept
 	logrus.Infoln("Server stopped")
+	<-s.quit
 }
 
 type conn struct {
@@ -149,8 +166,9 @@ func newConn(c net.Conn) *conn {
 	return &conn{nc: c, close: make(chan struct{})}
 }
 
-func (c *conn) serve(ctx context.Context) {
+func (c *conn) serve(ctx context.Context, wg *sync.WaitGroup) {
 	defer c.nc.Close()
+	defer wg.Done()
 
 	reader := bufio.NewReaderSize(c.nc, 4<<10)
 
